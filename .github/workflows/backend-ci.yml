@@ -1,0 +1,44 @@
+# AD SOUTHERN SMART POS — Backend CI Validation
+# .github/workflows/backend-ci.yml
+#
+# ℹ️  Choreo ස්වයංක්‍රීයව GitHub push detect කර deploy කරයි.
+#     මෙම workflow CI validation (lint + dependency check) සඳහා පමණි.
+#     Choreo Console → Component → Deploy → Auto Deploy: ON කරන්න.
+#
+# ✅ Choreo deploy process:
+#   Push to main → Choreo detects → Build (NodeJS buildpack) → Deploy
+#   Manual trigger: Choreo Console → Deploy → Deploy button
+
+name: Backend CI Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check required files exist
+        run: |
+          test -f server.js             && echo "✅ server.js found"
+          test -f server_billing_routes.js && echo "✅ server_billing_routes.js found"
+          test -f module5_routes.js     && echo "✅ module5_routes.js found"
+          test -f .choreo/component.yaml && echo "✅ .choreo/component.yaml found"
+
+      - name: Syntax check
+        run: node --check server.js && echo "✅ server.js syntax OK"
