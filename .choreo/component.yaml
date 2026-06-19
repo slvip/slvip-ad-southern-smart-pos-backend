@@ -27,7 +27,6 @@
 #   CLOUDINARY_API_SECRET    = <your api secret>
 #   WHATSAPP_ADMIN_NUMBER    = 94771234567
 # ──────────────────────────────────────────────────────────────
-
 apiVersion: core.choreo.dev/v1beta1
 kind: Component
 metadata:
@@ -38,11 +37,7 @@ spec:
   build:
     buildPack:
       name: NodeJS
-    # Node version: package.json "engines": { "node": "20.x" } controls this
   source:
-    # Choreo Console හිදී Git integration configure කරන්න.
-    # path: /  = backend is at repo root
-    # path: /backend  = if you have a monorepo with /backend subfolder
     path: /
   endpoints:
     - name: api
@@ -53,7 +48,6 @@ spec:
       type: REST
       networkVisibilities:
         - Public
-      # Health check — Choreo probe uses this
       healthCheck:
         endpoint:
           path: /health
