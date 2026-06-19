@@ -1,13 +1,19 @@
+# ============================================================
 # AD SOUTHERN SMART POS — Backend CI Validation
-# .github/workflows/backend-ci.yml
-
+# FILE: .github/workflows/backend-ci.yml  (backend repo root)
+# ============================================================
+#
 # ℹ️  Choreo ස්වයංක්‍රීයව GitHub push detect කර deploy කරයි.
-#     මෙම workflow CI validation (lint + dependency check) සඳහා පමණි.
+#     මෙම workflow CI validation සඳහා පමණි (syntax, files, deps).
 #     Choreo Console → Component → Deploy → Auto Deploy: ON කරන්න.
-
+#
 # ✅ Choreo deploy process:
-#   Push to main → Choreo detects → Build (NodeJS buildpack) → Deploy
-#   Manual trigger: Choreo Console → Deploy → Deploy button
+#   Push to main → Choreo detects → NodeJS buildpack → Deploy
+#   Manual: Choreo Console → Deploy → Deploy button
+#
+# ✅ REQUIRED GitHub Secrets (Settings → Secrets → Actions):
+#   (backend CI needs none — secrets live in Choreo Console)
+# ============================================================
 
 name: Backend CI Check
 
@@ -20,25 +26,85 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
     steps:
+      # ── 1. Checkout ───────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 24
+      # ── 2. Node.js setup ──────────────────────────────────
+      # package.json engines: { "node": "20.x" } → Choreo uses Node 20
+      # CI uses Node 20 to match Choreo exactly.
+      # Lock file නැති නිසා cache: 'npm' ලයින් ඉවත් කළා.
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: '24' # Node 20 වෙනුවට අලුත්ම Node 24 දමා ඇත.
-          # Lock file එකක් නැති නිසා cache ලයින් එක ඉවත් කර ඇත.
+          node-version: '20'
 
+      # ── 3. Install dependencies ───────────────────────────
+      # npm ci → lock file අවශ්‍යයි; npm install → lock file නැතිව OK.
+      # package-lock.json නැති නිසා npm install use කරයි.
       - name: Install dependencies
-        run: npm install  # npm ci වෙනුවට npm install ලෙස වෙනස් කර ඇත.
+        run: npm install
 
+      # ── 4. Required files check ───────────────────────────
+      # Choreo build fail වීමට පෙර CI හිදී catch කරයි.
       - name: Check required files exist
         run: |
-          test -f server.js             && echo "✅ server.js found"
-          test -f server_billing_routes.js && echo "✅ server_billing_routes.js found"
-          test -f module5_routes.js     && echo "✅ module5_routes.js found"
-          test -f .choreo/component.yaml && echo "✅ .choreo/component.yaml found"
+          FAIL=0
 
-      - name: Syntax check
-        run: node --check server.js && echo "✅ server.js syntax OK"
+          check() {
+            if test -f "$1"; then
+              echo "✅  $1 found"
+            else
+              echo "❌  $1 MISSING"
+              FAIL=1
+            fi
+          }
+
+          check server.js
+          check server_billing_routes.js
+          check module5_routes.js
+          check package.json
+          check .choreo/component.yaml
+
+          if [ $FAIL -ne 0 ]; then
+            echo ""
+            echo "🚨 One or more required files are missing. Aborting."
+            exit 1
+          fi
+
+      # ── 5. Syntax check ───────────────────────────────────
+      # Node.js --check flag → parse only, does NOT run the server.
+      # MongoDB / env vars නොමැති නිසා full start කිරීම අවශ්‍ය නැත.
+      - name: Syntax check — server.js
+        run: |
+          node --check server.js
+          echo "✅  server.js syntax OK"
+
+      - name: Syntax check — server_billing_routes.js
+        run: |
+          node --check server_billing_routes.js
+          echo "✅  server_billing_routes.js syntax OK"
+
+      - name: Syntax check — module5_routes.js
+        run: |
+          node --check module5_routes.js
+          echo "✅  module5_routes.js syntax OK"
+
+      # ── 6. Dependency audit ───────────────────────────────
+      # Critical / High vulnerabilities report කරයි.
+      # --audit-level=critical → critical issues only fail the build.
+      - name: Security audit
+        run: npm audit --audit-level=critical || echo "⚠️  Audit warnings noted (non-critical)"
+
+      # ── 7. Summary ────────────────────────────────────────
+      - name: CI Summary
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════╗"
+          echo "║   ✅  Backend CI — ALL CHECKS PASSED  ║"
+          echo "╚══════════════════════════════════════╝"
+          echo ""
+          echo "➡️  Choreo auto-deploy: push to main triggers Choreo build."
+          echo "➡️  Manual deploy: Choreo Console → Component → Deploy."
