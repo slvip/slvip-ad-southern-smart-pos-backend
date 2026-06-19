@@ -1,0 +1,59 @@
+# AD SOUTHERN SMART POS — Choreo Backend Component Descriptor
+# ──────────────────────────────────────────────────────────────
+# ✅ PLACEMENT:  backend repo root → .choreo/component.yaml
+#    (Choreo Console → Component → Source → Path of this file)
+#
+# ✅ CHOREO SETUP STEPS:
+#   1. GitHub repo create කරන්න (backend files: server.js, server_billing_routes.js,
+#      module5_routes.js, package.json, .choreo/component.yaml)
+#   2. Choreo Console → Create Component → Service → Connect GitHub repo
+#   3. Build Pack: NodeJS | Source Path: /  (if backend is repo root)
+#   4. Environment Variables set කරන්න (below list)
+#   5. Health Check Path: /health
+#   6. Deploy → Endpoint URL copy → GitHub Secret REACT_APP_API_URL set කරන්න
+#
+# ✅ REQUIRED ENV VARS (Choreo Console → Component → Configs & Secrets):
+#   MONGO_URI                = mongodb+srv://user:pass@cluster.mongodb.net/pos_db
+#   JWT_SECRET               = <random 64-char string>
+#   MASTER_ACTION_PASSWORD   = <your master key>
+#   ACTION_PIN               = <4-digit PIN>
+#   FRONTEND_URL             = https://YOUR_ORG.github.io/YOUR_REPO
+#   SA_USERNAME              = superadmin
+#   SA_PASSWORD              = <strong password>
+#   SA_DISPLAYNAME           = Super Admin
+#   GEMINI_API_KEY           = <Google AI Studio key>
+#   CLOUDINARY_CLOUD_NAME    = <your cloud name>
+#   CLOUDINARY_API_KEY       = <your api key>
+#   CLOUDINARY_API_SECRET    = <your api secret>
+#   WHATSAPP_ADMIN_NUMBER    = 94771234567
+# ──────────────────────────────────────────────────────────────
+
+apiVersion: core.choreo.dev/v1beta1
+kind: Component
+metadata:
+  name: ad-southern-pos-backend
+  description: AD SOUTHERN SMART POS — Node.js/Express Backend (MongoDB Atlas)
+spec:
+  type: service
+  build:
+    buildPack:
+      name: NodeJS
+    # Node version: package.json "engines": { "node": "20.x" } controls this
+  source:
+    # Choreo Console හිදී Git integration configure කරන්න.
+    # path: /  = backend is at repo root
+    # path: /backend  = if you have a monorepo with /backend subfolder
+    path: /
+  endpoints:
+    - name: api
+      displayName: POS API
+      service:
+        basePath: /
+        port: 8080
+      type: REST
+      networkVisibilities:
+        - Public
+      # Health check — Choreo probe uses this
+      healthCheck:
+        endpoint:
+          path: /health

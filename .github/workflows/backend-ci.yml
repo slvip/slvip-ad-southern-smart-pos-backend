@@ -1,0 +1,61 @@
+# ============================================================
+# AD SOUTHERN SMART POS — Backend CI Validation
+# FILE: .github/workflows/backend-ci.yml
+# ============================================================
+name: Backend CI Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          # cache ඉවත් කළා — package-lock.json නැති නිසා
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+        # npm ci නෙවෙයි — lock file නැති නිසා npm install use කරයි
+        # --ignore-scripts = Baileys optional deps install scripts skip
+
+      - name: Check required files exist
+        run: |
+          FAIL=0
+          check() {
+            if test -f "$1"; then echo "✅  $1 found"
+            else echo "❌  $1 MISSING"; FAIL=1; fi
+          }
+          check server.js
+          check server_billing_routes.js
+          check module5_routes.js
+          check package.json
+          check .choreo/component.yaml
+          if [ $FAIL -ne 0 ]; then
+            echo "🚨 Required files missing!"
+            exit 1
+          fi
+
+      - name: Syntax check — server.js
+        run: node --check server.js && echo "✅ server.js OK"
+
+      - name: Syntax check — server_billing_routes.js
+        run: node --check server_billing_routes.js && echo "✅ billing OK"
+
+      - name: Syntax check — module5_routes.js
+        run: node --check module5_routes.js && echo "✅ module5 OK"
+
+      - name: CI Summary
+        run: |
+          echo "╔══════════════════════════════════════╗"
+          echo "║   ✅  Backend CI — ALL CHECKS PASSED  ║"
+          echo "╚══════════════════════════════════════╝"
