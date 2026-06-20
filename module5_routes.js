@@ -253,8 +253,17 @@ function makeAuthMiddleware() {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer '))
       return res.status(401).json({ message: 'Unauthorized' });
+    // FIX (Critical Issue #1, follow-up): no more 'change_me_in_production'
+    // fallback here. server.js already refuses to boot if JWT_SECRET is
+    // missing/insecure, so by the time this module loads it's guaranteed
+    // to be a real value — but we still guard defensively in case this
+    // file is ever required standalone or before that check runs.
+    const JWT_SECRET = process.env.JWT_SECRET;
+    if (!JWT_SECRET) {
+      return res.status(500).json({ message: 'Server misconfigured: JWT_SECRET missing' });
+    }
     try {
-      req.user = jwt.verify(header.slice(7), process.env.JWT_SECRET || 'change_me_in_production');
+      req.user = jwt.verify(header.slice(7), JWT_SECRET);
       next();
     } catch {
       return res.status(401).json({ message: 'Token expired or invalid' });

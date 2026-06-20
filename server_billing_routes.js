@@ -30,17 +30,49 @@ const mongoose = require('mongoose');
 
 // ── EAN-13 Barcode Auto-Generator (for items without printed barcodes) ──
 // Prefix "99" = Internal/local barcode (EAN private use range)
+//
+// FIX (Critical Issue #5 — duplicate barcode risk):
+// The old implementation used `count + random`, which is NOT safe under
+// concurrent requests — two requests can read the same count before either
+// writes, producing the same barcode. We now use an atomic Mongo counter
+// document (findOneAndUpdate with $inc + upsert), which Mongo guarantees is
+// race-free even with many simultaneous callers.
+const CounterSchema = new mongoose.Schema({
+  _id: { type: String, required: true }, // e.g. "barcodeSequence:<shopId>"
+  seq: { type: Number, default: 0 },
+});
+const Counter = mongoose.models.Counter || mongoose.model('Counter', CounterSchema);
+
+async function nextBarcodeSequence(shopId) {
+  const key = `barcodeSequence:${shopId}`;
+  const doc = await Counter.findOneAndUpdate(
+    { _id: key },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return doc.seq;
+}
+
 async function generateEAN13(shopId) {
-  // Body: "99" + shopId last 4 chars + 7-digit sequence
+  // Body: "99" + shopId last 4 chars + 7-digit atomic sequence
   const shopSuffix = String(shopId).slice(-4);
-  const count = await InventoryItem.countDocuments({ shopId });
-  const seq   = String(count + 1 + Math.floor(Math.random() * 100)).padStart(7, '0');
-  const body  = `99${shopSuffix}${seq}`.slice(0, 12); // 12 digits
-  // EAN-13 check digit calculation
-  let sum = 0;
-  for (let i = 0; i < 12; i++) sum += parseInt(body[i]) * (i % 2 === 0 ? 1 : 3);
-  const check = (10 - (sum % 10)) % 10;
-  return body + check;
+
+  // Retry loop as a belt-and-braces guard in case a barcode was ever
+  // manually entered that collides with a generated one — the atomic
+  // counter itself already prevents collisions between generated barcodes.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seqNum  = await nextBarcodeSequence(shopId);
+    const seq     = String(seqNum).padStart(7, '0');
+    const body    = `99${shopSuffix}${seq}`.slice(0, 12); // 12 digits
+    let sum = 0;
+    for (let i = 0; i < 12; i++) sum += parseInt(body[i]) * (i % 2 === 0 ? 1 : 3);
+    const check   = (10 - (sum % 10)) % 10;
+    const barcode = body + check;
+
+    const exists = await InventoryItem.exists({ shopId, barcode });
+    if (!exists) return barcode;
+  }
+  throw new Error('Barcode generation failed after retries — please try again');
 }
 
 // ── InventoryItem Schema ──
@@ -140,7 +172,7 @@ async function generateBillNumber(shopId) {
 /* ════════════════════════════════════════════════════════════
    MAIN SETUP FUNCTION
 ════════════════════════════════════════════════════════════ */
-function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
+function setupBillingRoutes(app, { requireAuth, requirePinVerified, audit, Shop }) {
 
   /* ────────────────────────────────────────────────────────
      MIDDLEWARE: verify shop membership
@@ -285,11 +317,14 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
   });
 
   /* DELETE /api/admin/items/:itemId — soft delete */
-  inventoryRouter.delete('/:itemId', async (req, res) => {
+  inventoryRouter.delete('/:itemId', requirePinVerified, async (req, res) => {
     const { confirmation, masterPassword } = req.body;
     if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස confirm කරන්න' });
 
-    const master = process.env.MASTER_ACTION_PASSWORD || 'change_master_password';
+    // FIX (Issue #1): no insecure hardcoded fallback — server.js already
+    // hard-fails at boot if MASTER_ACTION_PASSWORD isn't set, so env var is
+    // guaranteed to be present and non-default here.
+    const master = process.env.MASTER_ACTION_PASSWORD;
     if (masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
 
     try {
@@ -521,12 +556,12 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
   });
 
   /* PUT /api/billing/bills/:billId/void — Void bill (api.js: voidBill uses PUT) */
-  billingRouter.put('/bills/:billId/void', async (req, res) => {
+  billingRouter.put('/bills/:billId/void', requirePinVerified, async (req, res) => {
     const { reason, masterPassword } = req.body;
 
     if (!reason?.trim()) return res.status(400).json({ message: 'Void reason ඇතුළත් කරන්න' });
 
-    const master = process.env.MASTER_ACTION_PASSWORD || 'change_master_password';
+    const master = process.env.MASTER_ACTION_PASSWORD;
     if (masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
 
     const shopId = req.user.shopId;

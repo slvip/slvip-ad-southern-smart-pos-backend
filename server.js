@@ -41,18 +41,47 @@ const PORT = process.env.PORT || 8080;
    avoid a misleading hardcoded fallback PIN sitting in the codebase. */
 const {
   MONGO_URI,
-  JWT_SECRET             = 'change_me_in_production',
-  MASTER_ACTION_PASSWORD = 'change_master_password',
+  JWT_SECRET,
+  MASTER_ACTION_PASSWORD,
   // CHOREO-2: GitHub Pages URL — Choreo env var හරහා inject කරන්න
   // Choreo Console → Environment Variables → FRONTEND_URL=https://YOUR_ORG.github.io/YOUR_REPO
   FRONTEND_URL           = 'https://slvip.github.io',
 } = process.env;
 
+// FIX (Critical Issue #1): refuse to boot with default/insecure secrets.
+// Previously these had hardcoded fallback values ('change_me_in_production',
+// 'change_master_password') — if .env failed to load, the whole system would
+// silently run with publicly-known secrets. Now we hard-fail instead.
+if (!JWT_SECRET || JWT_SECRET === 'change_me_in_production') {
+  console.error('❌ JWT_SECRET env variable missing or insecure — set a strong random value before starting.');
+  process.exit(1);
+}
+if (!MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD === 'change_master_password') {
+  console.error('❌ MASTER_ACTION_PASSWORD env variable missing or insecure — set a strong value before starting.');
+  process.exit(1);
+}
+
 // CHOREO-8: Choreo load balancer proxy trust
 app.set('trust proxy', true);
 
 /* ── Middleware ── */
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+// FIX (Issue #9): explicit hardening beyond helmet's defaults — HSTS forces
+// HTTPS on every future request, frameguard blocks clickjacking via iframe
+// embedding, and CSP restricts this API's own responses to same-origin
+// (it's a JSON API, not an HTML app, so 'self' + 'none' is intentionally tight).
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+  frameguard: { action: 'deny' },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  referrerPolicy: { policy: 'no-referrer' },
+  noSniff: true,
+}));
 app.use(cors({
   // CHOREO-2: FRONTEND_URL env var + local dev allow
   // Choreo Console හිදී FRONTEND_URL set කරන්න: https://YOUR_ORG.github.io
@@ -94,6 +123,16 @@ const ShopSchema = new mongoose.Schema({
   ownerUsername:    { type: String },
   // CHOREO-4: Per-shop Gemini API Key
   geminiApiKey:     { type: String, default: '' },
+  // FIX (Medium Issue #10): per-shop OCR usage quota to prevent one shop
+  // from exhausting the Gemini API quota for everyone.
+  ocrUsage: {
+    dailyCount:    { type: Number, default: 0 },
+    dailyResetAt:  { type: Date,   default: () => new Date() },
+    monthlyCount:  { type: Number, default: 0 },
+    monthlyResetAt:{ type: Date,   default: () => new Date() },
+    dailyLimit:    { type: Number, default: 100 },
+    monthlyLimit:  { type: Number, default: 1500 },
+  },
   settings: {
     cosmeticSavingsPercent: { type: Number,  default: 0 },
     lowStockDefault:        { type: Number,  default: 10 },
@@ -168,7 +207,12 @@ const AuditLog = mongoose.model('AuditLog', AuditLogSchema);
 /* ════════════════════════════════════════════════════════════
    HELPERS
 ════════════════════════════════════════════════════════════ */
-const signToken   = (payload, expiresIn = '12h') => jwt.sign(payload, JWT_SECRET, { expiresIn });
+// Strip exp/iat from payload before signing — spreading a decoded JWT (req.user)
+// would otherwise pass both payload.exp AND options.expiresIn, which jsonwebtoken rejects.
+const signToken = (payload, expiresIn = '12h') => {
+  const { exp, iat, ...cleanPayload } = payload;   // eslint-disable-line no-unused-vars
+  return jwt.sign(cleanPayload, JWT_SECRET, { expiresIn });
+};
 const verifyToken = (token) => jwt.verify(token, JWT_SECRET);
 
 function requireAuth(req, res, next) {
@@ -189,6 +233,27 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// FIX (High Priority Issue #7): Action PIN was only enforced in the
+// frontend PinModal component — a direct POST/PUT/DELETE request to a
+// destructive route (delete product/user/shop, reset settings, etc.)
+// could bypass it entirely. This middleware requires a short-lived
+// pinToken (issued by POST /api/auth/verify-pin after the user enters
+// their personal PIN) to be sent as `x-pin-token` header OR `pinToken`
+// in the body, and checks pinVerified=true was signed into it server-side.
+function requirePinVerified(req, res, next) {
+  const token = req.headers['x-pin-token'] || req.body?.pinToken;
+  if (!token) return res.status(403).json({ code: 'PIN_REQUIRED', message: 'මෙම ක්‍රියාව සඳහා PIN verification අවශ්‍යයි.' });
+  try {
+    const decoded = verifyToken(token);
+    if (!decoded.pinVerified || decoded.id !== req.user.id) {
+      return res.status(403).json({ code: 'PIN_REQUIRED', message: 'PIN verification අවලංගුයි. නැවත උත්සාහ කරන්න.' });
+    }
+    next();
+  } catch {
+    return res.status(403).json({ code: 'PIN_REQUIRED', message: 'PIN verification කල් ඉකුත් වී ඇත. නැවත PIN ඇතුළත් කරන්න.' });
+  }
+}
+
 async function audit(action, severity, req, extra = {}) {
   try {
     await AuditLog.create({
@@ -199,7 +264,13 @@ async function audit(action, severity, req, extra = {}) {
       shopId:      extra.shopId,
       shopName:    extra.shopName,
       ipAddress:   req.ip || req.headers['x-forwarded-for'],
-      details:     extra.details,
+      // FIX (Critical Issue #2): tag every action taken while a Super Admin
+      // is "ghosted" into a shop, so the full trail (who entered, which
+      // shop, what they did, when they exited) is reconstructable from the
+      // audit log alone instead of relying on the frontend.
+      details: req.user?.isGhost
+        ? `[GHOST by ${req.user.ghostBy}] ${extra.details || ''}`.trim()
+        : extra.details,
     });
   } catch (err) { console.error('Audit error:', err.message); }
 }
@@ -473,7 +544,7 @@ saRouter.get('/shops/:shopId', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
-saRouter.delete('/shops/:shopId', async (req, res) => {
+saRouter.delete('/shops/:shopId', requirePinVerified, async (req, res) => {
   const { confirmation, masterPassword } = req.body;
   if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස ටයිප් කළ යුතුය' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
@@ -525,7 +596,7 @@ saRouter.put('/users/:userId/reset-password', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
-saRouter.delete('/users/:userId', async (req, res) => {
+saRouter.delete('/users/:userId', requirePinVerified, async (req, res) => {
   const { confirmation, masterPassword } = req.body;
   if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස ටයිප් කළ යුතුය' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
@@ -574,7 +645,24 @@ saRouter.post('/ghost/:shopId', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
-// POST /api/super-admin/ghost-pin/set — Ghost PIN set/change (Master Password re-auth required)
+// POST /api/super-admin/ghost/exit — logs when a ghosted session ends.
+// FIX (Critical Issue #2): the previous implementation logged GHOST_LOGIN
+// (entry) but had no corresponding exit event, so a Super Admin's exit time
+// from a shop wasn't recoverable from the audit trail. The frontend's
+// exitGhost() should call this before discarding the ghost token.
+// NOTE: deliberately registered on `app` (not `saRouter`) — the ghost token
+// carries the *target shop admin's* role (isGhost:true, ghostBy:<SA username>),
+// not 'super_admin', so it would be rejected by saRouter's requireSuperAdmin.
+app.post('/api/super-admin/ghost/exit', requireAuth, async (req, res) => {
+  if (!req.user?.isGhost) return res.json({ success: true }); // not a ghost session, nothing to log
+  await audit('GHOST_LOGOUT', 'high', req, {
+    shopId: req.user.shopId,
+    details: `${req.user.ghostBy} exited ghost session in shop`,
+  });
+  return res.json({ success: true });
+});
+
+
 saRouter.post('/ghost-pin/set', async (req, res) => {
   try {
     const { masterPassword, newGhostPin } = req.body;
@@ -640,7 +728,7 @@ app.use('/api/super-admin', saRouter);
 /* ════════════════════════════════════════════════════════════
    MODULE 3+4 BILLING ROUTES
 ════════════════════════════════════════════════════════════ */
-setupBillingRoutes(app, { requireAuth, audit, Shop, User });
+setupBillingRoutes(app, { requireAuth, requirePinVerified, audit, Shop, User });
 
 /* ════════════════════════════════════════════════════════════
    MODULE 5 ROUTES
@@ -716,7 +804,7 @@ staffRouter.put('/:id', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
-staffRouter.delete('/:id', async (req, res) => {
+staffRouter.delete('/:id', requirePinVerified, async (req, res) => {
   try {
     const member = await User.findOneAndDelete({ _id: req.params.id, shopId: req.user.shopId, role: { $in: ['manager','cashier'] } });
     if (!member) return res.status(404).json({ message: 'Staff හමු නොවීය' });
@@ -758,13 +846,43 @@ ocrRouter.post('/', async (req, res) => {
   const { image } = req.body;
   if (!image) return res.status(400).json({ message: 'image (base64) අවශ්‍යයි' });
 
-  let GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || '';
+  // FIX (Medium Issue #10): enforce per-shop OCR quota before spending API calls.
+  let shop = null;
   if (req.user.shopId) {
-    try {
-      const shop = await Shop.findById(req.user.shopId).select('geminiApiKey settings').lean();
-      const shopKey = shop?.geminiApiKey || shop?.settings?.geminiApiKey || '';
-      if (shopKey) GEMINI_API_KEY = shopKey;
-    } catch (_) { /* fallback to global */ }
+    shop = await Shop.findById(req.user.shopId).select('geminiApiKey settings ocrUsage').lean();
+    if (shop) {
+      const now = new Date();
+      const usage = shop.ocrUsage || {};
+      const dailyStale   = !usage.dailyResetAt   || (now - new Date(usage.dailyResetAt))   > 24 * 3600 * 1000;
+      const monthlyStale = !usage.monthlyResetAt || (now - new Date(usage.monthlyResetAt)) > 30 * 24 * 3600 * 1000;
+      const dailyCount   = dailyStale   ? 0 : (usage.dailyCount   || 0);
+      const monthlyCount = monthlyStale ? 0 : (usage.monthlyCount || 0);
+      const dailyLimit   = usage.dailyLimit   ?? 100;
+      const monthlyLimit = usage.monthlyLimit ?? 1500;
+
+      if (dailyCount >= dailyLimit) {
+        return res.status(429).json({ message: `දෛනික OCR සීමාව (${dailyLimit}) ඉක්මවා ඇත. හෙට උත්සාහ කරන්න.` });
+      }
+      if (monthlyCount >= monthlyLimit) {
+        return res.status(429).json({ message: `මාසික OCR සීමාව (${monthlyLimit}) ඉක්මවා ඇත.` });
+      }
+
+      // Atomically bump usage counters (resetting if the window rolled over)
+      await Shop.findByIdAndUpdate(req.user.shopId, {
+        $set: {
+          'ocrUsage.dailyCount':    dailyStale   ? 1 : dailyCount + 1,
+          'ocrUsage.dailyResetAt':  dailyStale   ? now : (usage.dailyResetAt || now),
+          'ocrUsage.monthlyCount':  monthlyStale ? 1 : monthlyCount + 1,
+          'ocrUsage.monthlyResetAt': monthlyStale ? now : (usage.monthlyResetAt || now),
+        },
+      });
+    }
+  }
+
+  let GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || '';
+  if (shop) {
+    const shopKey = shop?.geminiApiKey || shop?.settings?.geminiApiKey || '';
+    if (shopKey) GEMINI_API_KEY = shopKey;
   }
 
   if (!GEMINI_API_KEY) return res.status(503).json({ message: 'Gemini API Key නොමැත. Settings හි set කරන්න.' });
@@ -864,7 +982,7 @@ adminSettingsRouter.get('/', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
-adminSettingsRouter.put('/', async (req, res) => {
+adminSettingsRouter.put('/', requirePinVerified, async (req, res) => {
   const allowed = ['cosmeticSavingsPercent','lowStockDefault','voiceAlerts','whatsappEnabled','whatsappPhoneNumber','shopDisplayName','receiptFooter','geminiApiKey'];
   const update  = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) update[`settings.${k}`] = req.body[k]; });

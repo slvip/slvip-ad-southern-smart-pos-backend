@@ -302,9 +302,191 @@ paths:
         '200':
           description: Financial matrix
 
-  # Catch-all so any routes from server_billing_routes.js / module5_routes.js
-  # (cheques, whatsapp, billing, etc.) that aren't individually listed above
-  # still get proxied rather than silently dropped at the gateway.
+  # FIX: the old single `/api/{proxyPath}` catch-all only matches ONE path
+  # segment, so it silently failed to route real nested paths like
+  # /api/billing/bills/{billId}/void (3 segments past /api/). Choreo's
+  # gateway needs every concrete path spelled out — it does not do
+  # arbitrary-depth wildcard matching from a single {param}. Everything
+  # below is enumerated from the actual Express routers in
+  # server_billing_routes.js and module5_routes.js.
+
+  /api/admin/items:
+    get:
+      operationId: itemsList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: List inventory items }
+    post:
+      operationId: itemsCreate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Create inventory item }
+  /api/admin/items/{itemId}:
+    patch:
+      operationId: itemsUpdate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: itemId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Update inventory item }
+    delete:
+      operationId: itemsDelete
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: itemId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Delete inventory item }
+  /api/admin/items/barcode:
+    get:
+      operationId: itemsBarcodeLookup
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Barcode lookup }
+  /api/admin/items/search:
+    get:
+      operationId: itemsSearch
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Item search }
+
+  /api/admin/cheques:
+    get:
+      operationId: chequesList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: List cheques }
+  /api/admin/cheques/received:
+    post:
+      operationId: chequesReceived
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Record received cheque }
+  /api/admin/cheques/issued:
+    post:
+      operationId: chequesIssued
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Record issued cheque }
+  /api/admin/cheques/{id}/cashed:
+    put:
+      operationId: chequesMarkCashed
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Mark cheque cashed }
+  /api/admin/cheques/{id}:
+    delete:
+      operationId: chequesDelete
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Delete cheque }
+
+  /api/admin/whatsapp/status:
+    get:
+      operationId: waStatus
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: WhatsApp connection status }
+  /api/admin/whatsapp/send:
+    post:
+      operationId: waSend
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Send WhatsApp message }
+  /api/admin/whatsapp/send-void-alert:
+    post:
+      operationId: waSendVoidAlert
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Send bill-void WhatsApp alert }
+  /api/admin/whatsapp/reconnect:
+    post:
+      operationId: waReconnect
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Force WhatsApp reconnect }
+
+  /api/admin/finance/matrix:
+    get:
+      operationId: financeMatrixDuplicate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Financial matrix (module5) }
+
+  /api/billing/bills:
+    get:
+      operationId: billsList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: List bills }
+    post:
+      operationId: billsCreate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Create bill }
+  /api/billing/bills/{billId}:
+    get:
+      operationId: billGet
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: billId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Get bill }
+  /api/billing/bills/{billId}/void:
+    put:
+      operationId: billVoid
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: billId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Void bill }
+  /api/billing/holds:
+    get:
+      operationId: holdsList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: List held bills }
+    post:
+      operationId: holdsCreate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Hold a bill }
+  /api/billing/holds/{holdId}/retrieve:
+    put:
+      operationId: holdRetrieve
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: holdId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Retrieve held bill }
+  /api/billing/settings/cosmetic-rate:
+    put:
+      operationId: billingCosmeticRate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Update cosmetic rounding rate }
+
+  /api/sync/offline-push:
+    post:
+      operationId: syncOfflinePush
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Push queued offline bills }
+  /api/sync/stock-snapshot/{shopId}:
+    get:
+      operationId: syncStockSnapshot
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Stock snapshot for offline cache }
+
+  # Kept as a last-resort fallback for any single-segment route added later
+  # without an OpenAPI update — does NOT cover multi-segment paths, see note
+  # above. All real multi-segment routes are explicit now.
   /api/{proxyPath}:
     get:
       operationId: apiCatchAllGet
