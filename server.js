@@ -267,7 +267,17 @@ authRouter.post('/verify-pin', requireAuth, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
   const storedPin = (process.env.ACTION_PIN || ACTION_PIN).trim();
-  if (pin.trim() !== storedPin) return res.status(400).json({ message: 'PIN වැරදියි' });
+  const submittedPin = pin.trim();
+  if (submittedPin !== storedPin) {
+    // TEMP DEBUG — char-code comparison, remove after diagnosing
+    return res.status(400).json({
+      message: 'PIN වැරදියි',
+      debug: {
+        submitted: [...submittedPin].map(c => c.charCodeAt(0)),
+        stored: [...storedPin].map(c => c.charCodeAt(0)),
+      },
+    });
+  }
   const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
   await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified' });
   return res.json({ success: true, pinToken });
