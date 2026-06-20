@@ -34,21 +34,15 @@ const app  = express();
 // CHOREO-1: Choreo PORT inject කරයි — process.env.PORT use කරන්න
 const PORT = process.env.PORT || 8080;
 
-// 🔍 TEMP DIAGNOSTIC — safe to keep briefly, remove once PIN issue confirmed.
-// Logs ONLY whether ACTION_PIN env var is actually set on this running pod,
-// and its digit length — never the value itself. Check Choreo's log viewer
-// after deploy to confirm which config/value this instance picked up.
-console.log(
-  '🔍 ACTION_PIN env var:',
-  process.env.ACTION_PIN ? `SET (length ${process.env.ACTION_PIN.length})` : 'NOT SET — using hardcoded fallback "1234"'
-);
-
-/* ── Environment ── */
+/* ── Environment ──
+   NOTE: A global ACTION_PIN fallback ('1234') previously existed here but was
+   never actually checked anywhere in the routes — it was dead code left over
+   from before Layer 2 became per-user (see UserSchema.actionPin). Removed to
+   avoid a misleading hardcoded fallback PIN sitting in the codebase. */
 const {
   MONGO_URI,
   JWT_SECRET             = 'change_me_in_production',
   MASTER_ACTION_PASSWORD = 'change_master_password',
-  ACTION_PIN             = '1234',
   // CHOREO-2: GitHub Pages URL — Choreo env var හරහා inject කරන්න
   // Choreo Console → Environment Variables → FRONTEND_URL=https://YOUR_ORG.github.io/YOUR_REPO
   FRONTEND_URL           = 'https://slvip.github.io',
@@ -383,21 +377,31 @@ saRouter.get('/shops', async (req, res) => {
 });
 
 saRouter.post('/shops', async (req, res) => {
-  const { shopName, businessCategory, stockTier, adminUsername, adminPassword, adminDisplayName, masterPassword, geminiApiKey } = req.body;
+  const { shopName, businessCategory, stockTier, adminUsername, adminPassword, adminDisplayName, adminPin, masterPassword, geminiApiKey } = req.body;
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
   if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
-  if (!shopName || !businessCategory || !stockTier || !adminUsername || !adminPassword || !adminDisplayName)
+  if (!shopName || !businessCategory || !stockTier || !adminUsername || !adminPassword || !adminDisplayName || !adminPin)
     return res.status(400).json({ message: 'සියලු ක්ෂේත්‍ර අවශ්‍යයි' });
   if (adminPassword.length < 8) return res.status(400).json({ message: 'Admin Password min 8 chars' });
+  // CHOREO-9: SA shop creation වෙලාවේම admin ගේ Layer 2 PIN එක direct set කරයි
+  if (!/^\d{4}$/.test(adminPin)) return res.status(400).json({ message: 'Admin PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
   try {
     if (await User.findOne({ username: adminUsername.toLowerCase() })) return res.status(409).json({ message: 'Username දැනටමත් භාවිතයේ' });
     const shop = await Shop.create({
       name: shopName, businessCategory, stockTier,
       ownerUsername: adminUsername.toLowerCase(),
-      geminiApiKey: geminiApiKey || '',
+      geminiApiKey: (geminiApiKey || '').trim(),
     });
-    const adminUser = await User.create({ username: adminUsername.toLowerCase(), displayName: adminDisplayName, password: adminPassword, role: 'admin', shopId: shop._id });
-    await audit('CREATE_SHOP', 'high', req, { shopId: shop._id, shopName: shop.name, details: `Admin: ${adminUsername}` });
+    const adminUser = await User.create({
+      username: adminUsername.toLowerCase(),
+      displayName: adminDisplayName,
+      password: adminPassword,
+      actionPin: adminPin,   // pre-save hook bcrypt කරයි
+      pinSetAt: new Date(),
+      role: 'admin',
+      shopId: shop._id,
+    });
+    await audit('CREATE_SHOP', 'high', req, { shopId: shop._id, shopName: shop.name, details: `Admin: ${adminUsername} (PIN pre-set by SA)` });
     return res.status(201).json({ shop, adminUser: { _id: adminUser._id, username: adminUser.username } });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
