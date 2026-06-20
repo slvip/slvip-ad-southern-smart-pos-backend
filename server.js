@@ -197,6 +197,16 @@ app.get('/ping', (req, res) => res.status(200).json({
   timestamp: new Date().toISOString(),
   uptime: process.uptime(),
 }));
+
+// TEMP DEBUG — env var verification (REMOVE after confirming, do not leave in production)
+app.get('/__debug-env', (req, res) => {
+  const mask = (v) => v ? `${v.slice(0,1)}***${v.slice(-1)} (len:${v.length})` : 'NOT SET (using fallback)';
+  res.json({
+    ACTION_PIN: mask(process.env.ACTION_PIN),
+    MASTER_ACTION_PASSWORD: mask(process.env.MASTER_ACTION_PASSWORD),
+    JWT_SECRET: mask(process.env.JWT_SECRET),
+  });
+});
 app.get('/health', (req, res) => res.status(200).json({
   status: 'ok',
   db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
@@ -257,7 +267,7 @@ authRouter.post('/verify-pin', requireAuth, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
   const storedPin = process.env.ACTION_PIN || ACTION_PIN;
-  if (pin !== storedPin) return res.status(401).json({ message: 'PIN වැරදියි' });
+  if (pin !== storedPin) return res.status(400).json({ message: 'PIN වැරදියි' });
   const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
   await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified' });
   return res.json({ success: true, pinToken });
@@ -267,7 +277,7 @@ authRouter.post('/verify-master-password', requireAuth, (req, res) => {
   const { masterPassword } = req.body;
   if (!masterPassword) return res.status(400).json({ message: 'Master Password ඇතුළත් කරන්න' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
+  if (masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
   return res.json({ success: true });
 });
 
@@ -317,7 +327,7 @@ saRouter.get('/shops', async (req, res) => {
 saRouter.post('/shops', async (req, res) => {
   const { shopName, businessCategory, stockTier, adminUsername, adminPassword, adminDisplayName, masterPassword, geminiApiKey } = req.body;
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
+  if (!masterPassword || masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
   if (!shopName || !businessCategory || !stockTier || !adminUsername || !adminPassword || !adminDisplayName)
     return res.status(400).json({ message: 'සියලු ක්ෂේත්‍ර අවශ්‍යයි' });
   if (adminPassword.length < 8) return res.status(400).json({ message: 'Admin Password min 8 chars' });
@@ -392,7 +402,7 @@ saRouter.delete('/shops/:shopId', async (req, res) => {
   const { confirmation, masterPassword } = req.body;
   if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස ටයිප් කළ යුතුය' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
+  if (!masterPassword || masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
   try {
     const shop = await Shop.findById(req.params.shopId);
     if (!shop) return res.status(404).json({ message: 'Shop හමු නොවීය' });
@@ -444,7 +454,7 @@ saRouter.delete('/users/:userId', async (req, res) => {
   const { confirmation, masterPassword } = req.body;
   if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස ටයිප් කළ යුතුය' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
+  if (!masterPassword || masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
   try {
     const user = await User.findByIdAndDelete(req.params.userId).select('-password');
     if (!user) return res.status(404).json({ message: 'User හමු නොවීය' });
