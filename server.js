@@ -202,7 +202,7 @@ app.get('/ping', (req, res) => res.status(200).json({
 app.get('/__debug-env', (req, res) => {
   const mask = (v) => v ? `${v.slice(0,1)}***${v.slice(-1)} (len:${v.length})` : 'NOT SET (using fallback)';
   res.json({
-    ACTION_PIN: mask(process.env.ACTION_PIN),
+    ACTION_PIN_FULL: JSON.stringify(process.env.ACTION_PIN ?? null), // TEMP: full value, remove after debugging
     MASTER_ACTION_PASSWORD: mask(process.env.MASTER_ACTION_PASSWORD),
     JWT_SECRET: mask(process.env.JWT_SECRET),
   });
@@ -266,8 +266,8 @@ authRouter.post('/logout', requireAuth, async (req, res) => {
 authRouter.post('/verify-pin', requireAuth, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
-  const storedPin = process.env.ACTION_PIN || ACTION_PIN;
-  if (pin !== storedPin) return res.status(400).json({ message: 'PIN වැරදියි' });
+  const storedPin = (process.env.ACTION_PIN || ACTION_PIN).trim();
+  if (pin.trim() !== storedPin) return res.status(400).json({ message: 'PIN වැරදියි' });
   const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
   await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified' });
   return res.json({ success: true, pinToken });
