@@ -38,6 +38,12 @@ endpoints:
     type: REST
     networkVisibilities:
       - Public
+    schemaFilePath: openapi.yaml
+    # FIX: explicit schema added so the gateway's route table matches every
+    # Express route (including verify-pin, added after the component's first
+    # deploy). Without this, routes added later were never wired into the
+    # gateway proxy — requests just hung until client timeout instead of
+    # reaching the backend pod (Gateway logs showed ServiceHost="-").
 
 # NOTE: Health check path (/health) eka component.yaml eken define karanne nathuwa
 # Choreo Console > Component > Deploy > Configure & Deploy > Endpoint Details

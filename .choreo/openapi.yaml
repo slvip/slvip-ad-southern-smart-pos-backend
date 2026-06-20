@@ -1,0 +1,355 @@
+openapi: 3.0.0
+info:
+  title: AD SOUTHERN SMART POS API
+  version: 1.0.0
+  description: >
+    Full route map for the AD SOUTHERN SMART POS backend. This file exists so
+    Choreo's gateway has an explicit definition of every path the Express app
+    exposes. Without this, routes added after the component's first deploy
+    (e.g. verify-pin) can fail to be wired into the gateway's route table,
+    causing requests to hang until timeout instead of reaching the backend
+    pod (visible in Gateway logs as ServiceHost="-").
+servers:
+  - url: /
+
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200':
+          description: Health check
+  /ping:
+    get:
+      operationId: ping
+      responses:
+        '200':
+          description: Keep-alive ping
+  /:
+    get:
+      operationId: root
+      responses:
+        '200':
+          description: API root status
+
+  /api/auth/login:
+    post:
+      operationId: authLogin
+      responses:
+        '200':
+          description: Login
+  /api/auth/me:
+    get:
+      operationId: authMe
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current user
+  /api/auth/logout:
+    post:
+      operationId: authLogout
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Logout
+  /api/auth/verify-pin:
+    post:
+      operationId: authVerifyPin
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Verify Layer 2 Action PIN
+  /api/auth/verify-master-password:
+    post:
+      operationId: authVerifyMasterPassword
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Verify Layer 3 master password
+  /api/auth/change-password:
+    put:
+      operationId: authChangePassword
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Change password
+
+  /api/super-admin/dashboard:
+    get:
+      operationId: saDashboard
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Super admin dashboard
+  /api/super-admin/shops:
+    get:
+      operationId: saShopsList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: List shops
+    post:
+      operationId: saShopsCreate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Create shop
+  /api/super-admin/shops/{shopId}:
+    get:
+      operationId: saShopGet
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Get shop
+    put:
+      operationId: saShopUpdate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Update shop
+    delete:
+      operationId: saShopDelete
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Delete shop
+  /api/super-admin/shops/{shopId}/gemini-key:
+    patch:
+      operationId: saShopGeminiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Update shop gemini key
+  /api/super-admin/shops/{shopId}/tier:
+    patch:
+      operationId: saShopTier
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Update shop tier
+  /api/super-admin/shops/{shopId}/toggle:
+    put:
+      operationId: saShopToggle
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Toggle shop active state
+  /api/super-admin/users:
+    get:
+      operationId: saUsersList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: List users
+    post:
+      operationId: saUsersCreate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Create user
+  /api/super-admin/users/{userId}:
+    patch:
+      operationId: saUserUpdate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Update user
+    delete:
+      operationId: saUserDelete
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Delete user
+  /api/super-admin/users/{userId}/reset-password:
+    put:
+      operationId: saUserResetPassword
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Reset user password
+  /api/super-admin/ghost/{shopId}:
+    post:
+      operationId: saGhostLogin
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: shopId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Ghost login as shop admin
+  /api/super-admin/audit:
+    get:
+      operationId: saAuditList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Audit log list
+  /api/super-admin/audit/export:
+    get:
+      operationId: saAuditExport
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Audit log CSV export
+
+  /api/admin/staff:
+    get:
+      operationId: staffList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: List staff
+    post:
+      operationId: staffCreate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201':
+          description: Create staff
+  /api/admin/staff/{id}:
+    put:
+      operationId: staffUpdate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Update staff
+    delete:
+      operationId: staffDelete
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Delete staff
+  /api/admin/staff/{id}/reset-password:
+    put:
+      operationId: staffResetPassword
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Reset staff password
+
+  /api/admin/audit:
+    get:
+      operationId: adminAuditList
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Shop-level audit logs
+
+  /api/admin/items/ocr:
+    post:
+      operationId: ocrExtract
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OCR invoice extraction
+  /api/admin/items/ocr/bulk-import:
+    post:
+      operationId: ocrBulkImport
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OCR bulk import
+
+  /api/admin/dashboard:
+    get:
+      operationId: adminDashboard
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Admin dashboard summary
+
+  /api/admin/settings:
+    get:
+      operationId: adminSettingsGet
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Shop settings
+    put:
+      operationId: adminSettingsUpdate
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Update shop settings
+
+  /api/admin/finance/matrix:
+    get:
+      operationId: adminFinanceMatrix
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Financial matrix
+
+  # Catch-all so any routes from server_billing_routes.js / module5_routes.js
+  # (cheques, whatsapp, billing, etc.) that aren't individually listed above
+  # still get proxied rather than silently dropped at the gateway.
+  /api/{proxyPath}:
+    get:
+      operationId: apiCatchAllGet
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: proxyPath, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Catch-all GET
+    post:
+      operationId: apiCatchAllPost
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: proxyPath, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Catch-all POST
+    put:
+      operationId: apiCatchAllPut
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: proxyPath, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Catch-all PUT
+    patch:
+      operationId: apiCatchAllPatch
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: proxyPath, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Catch-all PATCH
+    delete:
+      operationId: apiCatchAllDelete
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: proxyPath, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Catch-all DELETE
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
