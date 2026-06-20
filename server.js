@@ -31,7 +31,17 @@ const { setupBillingRoutes } = require('./server_billing_routes');
 const { setupModule5 }       = require('./module5_routes');
 
 const app  = express();
+// CHOREO-1: Choreo PORT inject කරයි — process.env.PORT use කරන්න
 const PORT = process.env.PORT || 8080;
+
+// 🔍 TEMP DIAGNOSTIC — safe to keep briefly, remove once PIN issue confirmed.
+// Logs ONLY whether ACTION_PIN env var is actually set on this running pod,
+// and its digit length — never the value itself. Check Choreo's log viewer
+// after deploy to confirm which config/value this instance picked up.
+console.log(
+  '🔍 ACTION_PIN env var:',
+  process.env.ACTION_PIN ? `SET (length ${process.env.ACTION_PIN.length})` : 'NOT SET — using hardcoded fallback "1234"'
+);
 
 /* ── Environment ── */
 const {
@@ -39,15 +49,19 @@ const {
   JWT_SECRET             = 'change_me_in_production',
   MASTER_ACTION_PASSWORD = 'change_master_password',
   ACTION_PIN             = '1234',
+  // CHOREO-2: GitHub Pages URL — Choreo env var හරහා inject කරන්න
+  // Choreo Console → Environment Variables → FRONTEND_URL=https://YOUR_ORG.github.io/YOUR_REPO
   FRONTEND_URL           = 'https://slvip.github.io',
 } = process.env;
 
-// Choreo load balancer proxy trust
+// CHOREO-8: Choreo load balancer proxy trust
 app.set('trust proxy', true);
 
 /* ── Middleware ── */
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
+  // CHOREO-2: FRONTEND_URL env var + local dev allow
+  // Choreo Console හිදී FRONTEND_URL set කරන්න: https://YOUR_ORG.github.io
   origin: (origin, cb) => {
     const allowed = [
       FRONTEND_URL,
@@ -84,6 +98,7 @@ const ShopSchema = new mongoose.Schema({
   stockTier:        { type: String, required: true, enum: ['micro','standard','mega','enterprise'], default: 'standard' },
   isActive:         { type: Boolean, default: true },
   ownerUsername:    { type: String },
+  // CHOREO-4: Per-shop Gemini API Key
   geminiApiKey:     { type: String, default: '' },
   settings: {
     cosmeticSavingsPercent: { type: Number,  default: 0 },
@@ -182,6 +197,8 @@ app.use('/api/', apiLimiter);
 
 /* ════════════════════════════════════════════════════════════
    HEALTH / KEEP-ALIVE
+   CHOREO-3: Choreo healthcheck probe '/health' use කරයි
+   Choreo Console → Component → Health Check → Path: /health
 ════════════════════════════════════════════════════════════ */
 app.get('/ping', (req, res) => res.status(200).json({
   status: 'ok',
@@ -189,7 +206,6 @@ app.get('/ping', (req, res) => res.status(200).json({
   timestamp: new Date().toISOString(),
   uptime: process.uptime(),
 }));
-
 app.get('/health', (req, res) => res.status(200).json({
   status: 'ok',
   db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
@@ -246,18 +262,11 @@ authRouter.post('/logout', requireAuth, async (req, res) => {
   return res.json({ success: true });
 });
 
-// 🔒 SECURED: PIN verification properly restored
 authRouter.post('/verify-pin', requireAuth, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
-
-  const storedPin = (process.env.ACTION_PIN || ACTION_PIN).trim();
-  const submittedPin = pin.trim();
-  
-  if (submittedPin !== storedPin) {
-    return res.status(400).json({ message: 'PIN වැරදියි' });
-  }
-
+  const storedPin = process.env.ACTION_PIN || ACTION_PIN;
+  if (pin !== storedPin) return res.status(401).json({ message: 'PIN වැරදියි' });
   const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
   await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified' });
   return res.json({ success: true, pinToken });
@@ -267,10 +276,11 @@ authRouter.post('/verify-master-password', requireAuth, (req, res) => {
   const { masterPassword } = req.body;
   if (!masterPassword) return res.status(400).json({ message: 'Master Password ඇතුළත් කරන්න' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
+  if (masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
   return res.json({ success: true });
 });
 
+// FIX: change-password route — api.js authAPI.changePassword() calls this
 authRouter.put('/change-password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) return res.status(400).json({ message: 'currentPassword සහ newPassword අවශ්‍යයි' });
@@ -316,7 +326,7 @@ saRouter.get('/shops', async (req, res) => {
 saRouter.post('/shops', async (req, res) => {
   const { shopName, businessCategory, stockTier, adminUsername, adminPassword, adminDisplayName, masterPassword, geminiApiKey } = req.body;
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (!masterPassword || masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
+  if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
   if (!shopName || !businessCategory || !stockTier || !adminUsername || !adminPassword || !adminDisplayName)
     return res.status(400).json({ message: 'සියලු ක්ෂේත්‍ර අවශ්‍යයි' });
   if (adminPassword.length < 8) return res.status(400).json({ message: 'Admin Password min 8 chars' });
@@ -391,7 +401,7 @@ saRouter.delete('/shops/:shopId', async (req, res) => {
   const { confirmation, masterPassword } = req.body;
   if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස ටයිප් කළ යුතුය' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (!masterPassword || masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
+  if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
   try {
     const shop = await Shop.findById(req.params.shopId);
     if (!shop) return res.status(404).json({ message: 'Shop හමු නොවීය' });
@@ -443,7 +453,7 @@ saRouter.delete('/users/:userId', async (req, res) => {
   const { confirmation, masterPassword } = req.body;
   if (confirmation !== 'YES') return res.status(400).json({ message: '"YES" ලෙස ටයිප් කළ යුතුය' });
   const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
-  if (!masterPassword || masterPassword !== master) return res.status(400).json({ message: 'Master Password වැරදියි' });
+  if (!masterPassword || masterPassword !== master) return res.status(401).json({ message: 'Master Password වැරදියි' });
   try {
     const user = await User.findByIdAndDelete(req.params.userId).select('-password');
     if (!user) return res.status(404).json({ message: 'User හමු නොවීය' });
@@ -545,10 +555,11 @@ staffRouter.put('/:id/reset-password', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
+// PUT /api/admin/staff/:id — update staff (api.js: adminAPI.updateStaff)
 staffRouter.put('/:id', async (req, res) => {
   const allowed = ['displayName', 'role', 'isActive'];
   const update  = {};
-  allowed.forEach(k => { if (req.body[k] !== undefined) update[`settings.${k}`] = req.body[k]; });
+  allowed.forEach(k => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
   if (update.role && !['manager', 'cashier'].includes(update.role))
     return res.status(400).json({ message: 'Role: manager/cashier පමණි' });
   try {
@@ -595,7 +606,7 @@ adminAuditRouter.get('/', async (req, res) => {
 app.use('/api/admin/audit', adminAuditRouter);
 
 /* ════════════════════════════════════════════════════════════
-   OCR ROUTE — Per-shop Gemini key → global key fallback
+   OCR ROUTE — CHOREO-5: Per-shop Gemini key → global key fallback
 ════════════════════════════════════════════════════════════ */
 const ocrRouter = express.Router();
 ocrRouter.use(requireAuth);
@@ -692,7 +703,7 @@ adminDashRouter.get('/', async (req, res) => {
 app.use('/api/admin/dashboard', adminDashRouter);
 
 /* ════════════════════════════════════════════════════════════
-   ADMIN SETTINGS — geminiApiKey save/load
+   ADMIN SETTINGS — CHOREO-7: geminiApiKey save/load
 ════════════════════════════════════════════════════════════ */
 const adminSettingsRouter = express.Router();
 adminSettingsRouter.use(requireAuth, requireAdmin);
@@ -728,7 +739,7 @@ adminSettingsRouter.put('/', async (req, res) => {
 app.use('/api/admin/settings', adminSettingsRouter);
 
 /* ════════════════════════════════════════════════════════════
-   FINANCIAL MATRIX
+   FINANCIAL MATRIX (api.js FIX-1 route)
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/finance/matrix', requireAuth, requireAdmin, async (req, res) => {
   try {
