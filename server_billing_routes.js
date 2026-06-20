@@ -28,26 +28,44 @@ const mongoose = require('mongoose');
    SCHEMAS  (server.js ට paste කරන්න)
 ════════════════════════════════════════════════════════════ */
 
+// ── EAN-13 Barcode Auto-Generator (for items without printed barcodes) ──
+// Prefix "99" = Internal/local barcode (EAN private use range)
+async function generateEAN13(shopId) {
+  // Body: "99" + shopId last 4 chars + 7-digit sequence
+  const shopSuffix = String(shopId).slice(-4);
+  const count = await InventoryItem.countDocuments({ shopId });
+  const seq   = String(count + 1 + Math.floor(Math.random() * 100)).padStart(7, '0');
+  const body  = `99${shopSuffix}${seq}`.slice(0, 12); // 12 digits
+  // EAN-13 check digit calculation
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += parseInt(body[i]) * (i % 2 === 0 ? 1 : 3);
+  const check = (10 - (sum % 10)) % 10;
+  return body + check;
+}
+
 // ── InventoryItem Schema ──
 const InventoryItemSchema = new mongoose.Schema({
-  shopId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Shop', required: true },
-  name:         { type: String, required: true, trim: true },
-  sku:          { type: String, trim: true },
-  barcode:      { type: String, trim: true },
-  category:     { type: String, trim: true },
-  subCategory:  { type: String, trim: true },
-  unit:         { type: String, default: 'Nos' },
-  quantity:     { type: Number, default: 0, min: 0 },
-  costPrice:    { type: Number, required: true, min: 0 },
-  sellingPrice: { type: Number, required: true, min: 0 },
-  expiryDate:   { type: Date, default: null },
-  lowStockAt:   { type: Number, default: null }, // null = use shop default
-  isActive:     { type: Boolean, default: true },
+  shopId:        { type: mongoose.Schema.Types.ObjectId, ref: 'Shop', required: true },
+  name:          { type: String, required: true, trim: true },
+  sku:           { type: String, trim: true },
+  barcode:       { type: String, trim: true },
+  category:      { type: String, trim: true },
+  subCategory:   { type: String, trim: true },
+  unit:          { type: String, default: 'Nos' },
+  quantity:      { type: Number, default: 0 },  // දශමස්ථාන 3: kg=1.000, 250g=0.250
+  costPrice:     { type: Number, required: true, min: 0 },
+  sellingPrice:  { type: Number, required: true, min: 0 },
+  expiryDate:    { type: Date, default: null },
+  lowStockAt:    { type: Number, default: null },
+  isActive:      { type: Boolean, default: true },
+  // FRACTIONAL STOCK: දශම ප්‍රමාණ (කිලෝ, ලීටර්) සඳහා
+  isFractional:  { type: Boolean, default: false }, // true = kg/l, false = Nos/Pkt
 }, { timestamps: true });
 
-// Compound index: fast barcode + shop lookup
+// DATABASE INDEXING: Performance optimization — barcode/sku සෙවීම ms 5ක් ඇතුළත
 InventoryItemSchema.index({ shopId: 1, barcode: 1 });
-InventoryItemSchema.index({ shopId: 1, name:    'text', sku: 'text', barcode: 'text' });
+InventoryItemSchema.index({ shopId: 1, sku: 1 });
+InventoryItemSchema.index({ shopId: 1, name: 'text', sku: 'text', barcode: 'text' });
 
 const InventoryItem = mongoose.models.InventoryItem
   || mongoose.model('InventoryItem', InventoryItemSchema);
@@ -64,7 +82,7 @@ const BillSchema = new mongoose.Schema({
     name:    String,
     sku:     String,
     unit:    String,
-    qty:     { type: Number, required: true, min: 1 },
+    qty:     { type: Number, required: true, min: 0 },  // fractional items: 0.250 kg etc.
     price:   { type: Number, required: true },
     total:   Number, // qty * price (denormalized for quick reads)
   }],
@@ -192,7 +210,7 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
     const {
       name, sku, barcode, category, subCategory,
       unit, quantity, costPrice, sellingPrice,
-      expiryDate, lowStockAt,
+      expiryDate, lowStockAt, isFractional,
     } = req.body;
 
     if (!name || costPrice == null || sellingPrice == null) {
@@ -208,26 +226,42 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
       return res.status(403).json({ message: `Stock tier limit (${limit} items) ඉක්මවා ඇත. Tier Upgrade සඳහා Super Admin ට contact කරන්න.` });
     }
 
-    // Auto-generate SKU if not provided
+    // SKU AUTO-GENERATION: භාණ්ඩ නමේ මුල් අකුරු 3 + අනුක්‍රම අංකය
+    // (eg: "Parippu" → PAR-451)
     let finalSku = sku;
-    if (!finalSku && category) {
-      const abbr = category.slice(0, 3).toUpperCase();
-      const sub  = (subCategory || 'GEN').slice(0, 3).toUpperCase();
-      const seq  = String(currentCount + 1).padStart(3, '0');
-      finalSku   = `${abbr}-${sub}-${seq}`;
+    if (!finalSku) {
+      const nameCode = name.trim().replace(/[^a-zA-Z]/g, '').slice(0, 3).toUpperCase() || 'ITM';
+      const seq      = String(currentCount + 1).padStart(3, '0');
+      // Ensure uniqueness: if PAR-001 exists, try PAR-002 etc.
+      let candidate  = `${nameCode}-${seq}`;
+      const conflict = await InventoryItem.findOne({ shopId, sku: candidate });
+      if (conflict) candidate = `${nameCode}-${String(currentCount + 1 + Math.floor(Math.random()*89) + 10).padStart(3,'0')}`;
+      finalSku = candidate;
     }
+
+    // BARCODE AUTO-GENERATION: EAN-13 starting with "99" (internal range)
+    let finalBarcode = (barcode || '').trim();
+    if (!finalBarcode) {
+      finalBarcode = await generateEAN13(shopId);
+    }
+
+    // FRACTIONAL: quantity always stored as decimal (3 places for kg/l items)
+    const parsedQty = isFractional
+      ? Math.round(parseFloat(quantity || 0) * 1000) / 1000  // 3 decimal places
+      : Math.round(parseFloat(quantity || 0));
 
     try {
       const item = await InventoryItem.create({
-        shopId, name, sku: finalSku, barcode, category, subCategory,
-        unit: unit || 'Nos',
-        quantity: +quantity || 0,
+        shopId, name, sku: finalSku, barcode: finalBarcode, category, subCategory,
+        unit: unit || (isFractional ? 'kg' : 'Nos'),
+        quantity: parsedQty,
         costPrice: +costPrice,
         sellingPrice: +sellingPrice,
         expiryDate: expiryDate || null,
         lowStockAt: lowStockAt != null ? +lowStockAt : null,
+        isFractional: !!isFractional,
       });
-      await audit('CREATE_ITEM', 'low', req, { shopId, details: `Item සාදන ලදී: ${name} (${finalSku})` });
+      await audit('CREATE_ITEM', 'low', req, { shopId, details: `Item සාදන ලදී: ${name} (${finalSku}) | Barcode: ${finalBarcode}` });
       return res.status(201).json({ item });
     } catch (err) {
       return res.status(500).json({ message: err.message });

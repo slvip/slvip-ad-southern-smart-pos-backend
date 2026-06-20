@@ -119,13 +119,22 @@ const UserSchema = new mongoose.Schema({
   // Per-user 4-digit Action PIN (Layer 2 Security — each user sets their own)
   actionPin:      { type: String, default: null },   // bcrypt hashed
   pinSetAt:       { type: Date,   default: null },
+  // Super Admin Ghost PIN — used only by super_admin to bypass-login any shop
+  ghostPin:       { type: String, default: null },   // bcrypt hashed (super_admin only)
+  ghostPinSetAt:  { type: Date,   default: null },
 }, { timestamps: true });
 
+// PERFORMANCE FIX: bcrypt rounds 10 (was 12) — 4× faster on free-tier CPU
+// while still providing strong security (2^10 = 1024 hash iterations)
+const BCRYPT_ROUNDS = 10;
+
 UserSchema.pre('save', async function (next) {
-  if (this.isModified('password')) this.password = await bcrypt.hash(this.password, 12);
+  if (this.isModified('password')) this.password = await bcrypt.hash(this.password, BCRYPT_ROUNDS);
   if (this.isModified('actionPin') && this.actionPin && !/^\$2[aby]\$/.test(this.actionPin)) {
-    // Hash only if it's a plain 4-digit string (not already hashed)
-    this.actionPin = await bcrypt.hash(this.actionPin, 10);
+    this.actionPin = await bcrypt.hash(this.actionPin, BCRYPT_ROUNDS);
+  }
+  if (this.isModified('ghostPin') && this.ghostPin && !/^\$2[aby]\$/.test(this.ghostPin)) {
+    this.ghostPin = await bcrypt.hash(this.ghostPin, BCRYPT_ROUNDS);
   }
   next();
 });
@@ -135,6 +144,10 @@ UserSchema.methods.comparePassword = function (plain) {
 UserSchema.methods.comparePin = function (plain) {
   if (!this.actionPin) return Promise.resolve(false);
   return bcrypt.compare(plain, this.actionPin);
+};
+UserSchema.methods.compareGhostPin = function (plain) {
+  if (!this.ghostPin) return Promise.resolve(false);
+  return bcrypt.compare(plain, this.ghostPin);
 };
 const User = mongoose.model('User', UserSchema);
 
@@ -525,16 +538,70 @@ saRouter.delete('/users/:userId', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
+// POST /api/super-admin/ghost/:shopId
+// Ghost Login: Master Password හෝ Ghost PIN හරහා ඕනෑම Shop එකට ඇතුළු වේ
 saRouter.post('/ghost/:shopId', async (req, res) => {
   try {
+    const { ghostPin: submittedGhostPin, masterPassword } = req.body;
+    const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
+
+    if (!submittedGhostPin && !masterPassword) {
+      return res.status(400).json({ message: 'Ghost PIN හෝ Master Password ඇතුළත් කරන්න' });
+    }
+
+    // Verify: master password plaintext OR ghost PIN bcrypt match
+    const saUser = await User.findById(req.user.id);
+    if (!saUser) return res.status(401).json({ message: 'Super Admin User හමු නොවීය' });
+
+    let credentialOk = false;
+    if (masterPassword && masterPassword === master) {
+      credentialOk = true;
+    } else if (submittedGhostPin && saUser.ghostPin) {
+      credentialOk = await saUser.compareGhostPin(submittedGhostPin);
+    }
+    if (!credentialOk) {
+      return res.status(401).json({ message: 'Ghost PIN හෝ Master Password වැරදියි' });
+    }
+
     const shop = await Shop.findById(req.params.shopId);
     if (!shop) return res.status(404).json({ message: 'Shop හමු නොවීය' });
     if (!shop.isActive) return res.status(400).json({ message: 'Shop අක්‍රීයයි' });
     const adminUser = await User.findOne({ shopId: shop._id, role: 'admin' }).select('-password');
     if (!adminUser) return res.status(404).json({ message: 'Shop Admin හමු නොවීය' });
     const ghostToken = signToken({ id: adminUser._id, username: adminUser.username, displayName: adminUser.displayName, role: adminUser.role, shopId: adminUser.shopId, isGhost: true, ghostBy: req.user.username }, '4h');
-    await audit('GHOST_LOGIN', 'high', req, { shopId: shop._id, shopName: shop.name, details: `${req.user.username} → ${shop.name}` });
+    await audit('GHOST_LOGIN', 'high', req, { shopId: shop._id, shopName: shop.name, details: `${req.user.username} → ${shop.name} (via ${masterPassword ? 'MasterPW' : 'GhostPIN'})` });
     return res.json({ ghostToken, targetUser: adminUser });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+});
+
+// POST /api/super-admin/ghost-pin/set — Ghost PIN set/change (Master Password re-auth required)
+saRouter.post('/ghost-pin/set', async (req, res) => {
+  try {
+    const { masterPassword, newGhostPin } = req.body;
+    const master = process.env.MASTER_ACTION_PASSWORD || MASTER_ACTION_PASSWORD;
+    if (!masterPassword || masterPassword !== master) {
+      return res.status(401).json({ message: 'Master Password වැරදියි. Ghost PIN සැකසීමට Master Password අවශ්‍යයි.' });
+    }
+    if (!newGhostPin || !/^\d{4,8}$/.test(newGhostPin)) {
+      return res.status(400).json({ message: 'Ghost PIN ඉලක්කම් 4-8ක් ඇතුළත් කරන්න' });
+    }
+    const saUser = await User.findById(req.user.id);
+    if (!saUser || saUser.role !== 'super_admin') {
+      return res.status(403).json({ message: 'Super Admin access පමණක් අවශ්‍යයි' });
+    }
+    saUser.ghostPin      = newGhostPin; // pre-save hook bcrypt කරයි
+    saUser.ghostPinSetAt = new Date();
+    await saUser.save();
+    await audit('SET_GHOST_PIN', 'high', req, { details: 'Super Admin Ghost PIN set/changed' });
+    return res.json({ success: true, message: 'Ghost PIN සාර්ථකව සකස් කළා' });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+});
+
+// GET /api/super-admin/ghost-pin/status
+saRouter.get('/ghost-pin/status', async (req, res) => {
+  try {
+    const saUser = await User.findById(req.user.id).select('ghostPin ghostPinSetAt');
+    return res.json({ ghostPinSet: !!saUser?.ghostPin, ghostPinSetAt: saUser?.ghostPinSetAt });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
