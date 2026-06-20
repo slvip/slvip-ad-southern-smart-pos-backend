@@ -105,6 +105,7 @@ const ShopSchema = new mongoose.Schema({
     lowStockDefault:        { type: Number,  default: 10 },
     voiceAlerts:            { type: Boolean, default: true },
     whatsappEnabled:        { type: Boolean, default: false },
+    whatsappPhoneNumber:    { type: String,  default: '' },
     shopDisplayName:        { type: String,  default: '' },
     receiptFooter:          { type: String,  default: 'ස්තූතියි! AD SOUTHERN SMART POS' },
     geminiApiKey:           { type: String,  default: '' },
@@ -121,14 +122,25 @@ const UserSchema = new mongoose.Schema({
   isActive:       { type: Boolean, default: true },
   loginAttempts:  { type: Number, default: 0 },
   lockUntil:      { type: Date,   default: null },
+  // Per-user 4-digit Action PIN (Layer 2 Security — each user sets their own)
+  actionPin:      { type: String, default: null },   // bcrypt hashed
+  pinSetAt:       { type: Date,   default: null },
 }, { timestamps: true });
 
 UserSchema.pre('save', async function (next) {
   if (this.isModified('password')) this.password = await bcrypt.hash(this.password, 12);
+  if (this.isModified('actionPin') && this.actionPin && !/^\$2[aby]\$/.test(this.actionPin)) {
+    // Hash only if it's a plain 4-digit string (not already hashed)
+    this.actionPin = await bcrypt.hash(this.actionPin, 10);
+  }
   next();
 });
 UserSchema.methods.comparePassword = function (plain) {
   return bcrypt.compare(plain, this.password);
+};
+UserSchema.methods.comparePin = function (plain) {
+  if (!this.actionPin) return Promise.resolve(false);
+  return bcrypt.compare(plain, this.actionPin);
 };
 const User = mongoose.model('User', UserSchema);
 
@@ -265,11 +277,58 @@ authRouter.post('/logout', requireAuth, async (req, res) => {
 authRouter.post('/verify-pin', requireAuth, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
-  const storedPin = process.env.ACTION_PIN || ACTION_PIN;
-  if (pin !== storedPin) return res.status(401).json({ message: 'PIN වැරදියි' });
-  const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
-  await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified' });
-  return res.json({ success: true, pinToken });
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User හමු නොවීය' });
+
+    // If user has no personal PIN yet, guide them to set one first
+    if (!user.actionPin) {
+      return res.status(403).json({
+        code: 'PIN_NOT_SET',
+        message: 'ඔබේ Personal PIN සකස් කර නොමැත. Settings > Security හි PIN Set කරන්න.'
+      });
+    }
+
+    const valid = await user.comparePin(pin);
+    if (!valid) return res.status(401).json({ message: 'PIN වැරදියි. නැවත උත්සාහ කරන්න.' });
+
+    const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
+    await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 personal PIN verified' });
+    return res.json({ success: true, pinToken });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+});
+
+// POST /api/auth/set-pin — user ගේ own personal 4-digit PIN set / change
+authRouter.post('/set-pin', requireAuth, async (req, res) => {
+  const { pin, currentPin, currentPassword } = req.body;
+  if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User හමු නොවීය' });
+
+    // If user already has a PIN, require current PIN OR current password to change
+    if (user.actionPin) {
+      const pinOk      = currentPin ? await user.comparePin(currentPin) : false;
+      const passwordOk = currentPassword ? await user.comparePassword(currentPassword) : false;
+      if (!pinOk && !passwordOk) {
+        return res.status(401).json({ message: 'වත්මන් PIN හෝ Password නිවැරදිව ඇතුළත් කරන්න' });
+      }
+    }
+
+    user.actionPin = pin;  // pre-save hook will bcrypt this
+    user.pinSetAt  = new Date();
+    await user.save();
+    await audit('SET_PIN', 'medium', req, { details: 'Personal action PIN set/changed' });
+    return res.json({ success: true, message: 'PIN සාර්ථකව සකස් කළා' });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+});
+
+// GET /api/auth/pin-status — user ගේ PIN set කර ඇත්දැයි check
+authRouter.get('/pin-status', requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('actionPin pinSetAt');
+    return res.json({ pinSet: !!user?.actionPin, pinSetAt: user?.pinSetAt });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
 authRouter.post('/verify-master-password', requireAuth, (req, res) => {
@@ -555,6 +614,19 @@ staffRouter.put('/:id/reset-password', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
+// PUT /api/admin/staff/:id/reset-pin — Admin staff ගේ PIN reset කිරීමට (clear කිරීමට)
+staffRouter.put('/:id/reset-pin', async (req, res) => {
+  try {
+    const member = await User.findOne({ _id: req.params.id, shopId: req.user.shopId, role: { $in: ['manager', 'cashier'] } });
+    if (!member) return res.status(404).json({ message: 'Staff හමු නොවීය' });
+    member.actionPin = null;
+    member.pinSetAt  = null;
+    await member.save();
+    await audit('RESET_STAFF_PIN', 'high', req, { shopId: req.user.shopId, details: `PIN cleared for ${member.username}` });
+    return res.json({ success: true, message: `${member.displayName} ගේ PIN Reset කළා — ඔවුන් ලෝගින් වී නව PIN set කළ යුතුය` });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+});
+
 // PUT /api/admin/staff/:id — update staff (api.js: adminAPI.updateStaff)
 staffRouter.put('/:id', async (req, res) => {
   const allowed = ['displayName', 'role', 'isActive'];
@@ -722,7 +794,7 @@ adminSettingsRouter.get('/', async (req, res) => {
 });
 
 adminSettingsRouter.put('/', async (req, res) => {
-  const allowed = ['cosmeticSavingsPercent','lowStockDefault','voiceAlerts','whatsappEnabled','shopDisplayName','receiptFooter','geminiApiKey'];
+  const allowed = ['cosmeticSavingsPercent','lowStockDefault','voiceAlerts','whatsappEnabled','whatsappPhoneNumber','shopDisplayName','receiptFooter','geminiApiKey'];
   const update  = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) update[`settings.${k}`] = req.body[k]; });
   if (req.body.geminiApiKey !== undefined) {

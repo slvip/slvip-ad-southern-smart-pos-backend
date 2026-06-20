@@ -272,8 +272,22 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
     }
   });
 
+  /* ════════════════════════════════════════════════════════
+     FINANCE ROUTES  /api/admin/finance/*
+     BUG FIX: this used to be the SAME inventoryRouter mounted a
+     second time at '/api/admin/finance', which meant the full
+     item CRUD handlers (PATCH/DELETE '/:itemId') were also live
+     under '/api/admin/finance/:id' — e.g. a DELETE to
+     '/api/admin/finance/<itemId>' would silently soft-delete an
+     item, since Express matched it against inventoryRouter's
+     '/:itemId' route. Finance now has its own isolated router
+     that exposes ONLY the matrix endpoint.
+  ════════════════════════════════════════════════════════ */
+  const financeRouter = express.Router();
+  financeRouter.use(requireAuth, requireShopAccess);
+
   /* GET /api/admin/finance/matrix — Financial Live Matrix (Module 2B) */
-  inventoryRouter.get('/finance/matrix', async (req, res) => {
+  financeRouter.get('/matrix', async (req, res) => {
     const shopId = req.user.shopId;
     try {
       const agg = await InventoryItem.aggregate([
@@ -295,8 +309,8 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
     }
   });
 
-  app.use('/api/admin/items',          inventoryRouter);
-  app.use('/api/admin/finance',        inventoryRouter); // shared router, routes differ by path
+  app.use('/api/admin/items',   inventoryRouter);
+  app.use('/api/admin/finance', financeRouter);
 
   /* ════════════════════════════════════════════════════════
      BILLING ROUTES  /api/billing/*
@@ -605,8 +619,27 @@ function setupBillingRoutes(app, { requireAuth, audit, Shop }) {
         const exists = await Bill.findOne({ shopId, billNumber: b.billNumber });
         if (exists) { results.skipped++; continue; }
 
-        // Re-use createBill logic (simplified — no stock deduction, already done offline)
         const billNumber = b.billNumber || await generateBillNumber(shopId);
+
+        // BUG FIX: deduct real server-side stock for every item in this
+        // offline bill. The decrement that happens client-side while
+        // offline (utils/offlineSync.js decrementOfflineStock) only ever
+        // updates that device's local IndexedDB mirror — it never reaches
+        // the database. Without this, InventoryItem.quantity in MongoDB
+        // would never reflect anything sold while offline, silently
+        // drifting from real stock on hand. We clamp at 0 instead of
+        // rejecting, since the sale already physically happened and
+        // can't be undone after the fact — a stock count going to 0
+        // (rather than negative) just surfaces as "needs recount" instead
+        // of crashing the sync.
+        for (const bi of (b.items || [])) {
+          if (!bi.itemId) continue;
+          await InventoryItem.updateOne(
+            { _id: bi.itemId, shopId },
+            [{ $set: { quantity: { $max: [0, { $subtract: ['$quantity', bi.qty || 0] }] } } }]
+          ).catch(() => {}); // missing/renamed item shouldn't block the rest of the sync
+        }
+
         await Bill.create({
           shopId, billNumber,
           cashierId:   req.user.id,
