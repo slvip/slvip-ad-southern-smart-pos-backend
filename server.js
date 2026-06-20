@@ -31,7 +31,6 @@ const { setupBillingRoutes } = require('./server_billing_routes');
 const { setupModule5 }       = require('./module5_routes');
 
 const app  = express();
-// CHOREO-1: Choreo PORT inject කරයි — process.env.PORT use කරන්න
 const PORT = process.env.PORT || 8080;
 
 /* ── Environment ── */
@@ -40,19 +39,15 @@ const {
   JWT_SECRET             = 'change_me_in_production',
   MASTER_ACTION_PASSWORD = 'change_master_password',
   ACTION_PIN             = '1234',
-  // CHOREO-2: GitHub Pages URL — Choreo env var හරහා inject කරන්න
-  // Choreo Console → Environment Variables → FRONTEND_URL=https://YOUR_ORG.github.io/YOUR_REPO
   FRONTEND_URL           = 'https://slvip.github.io',
 } = process.env;
 
-// CHOREO-8: Choreo load balancer proxy trust
+// Choreo load balancer proxy trust
 app.set('trust proxy', true);
 
 /* ── Middleware ── */
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
-  // CHOREO-2: FRONTEND_URL env var + local dev allow
-  // Choreo Console හිදී FRONTEND_URL set කරන්න: https://YOUR_ORG.github.io
   origin: (origin, cb) => {
     const allowed = [
       FRONTEND_URL,
@@ -89,7 +84,6 @@ const ShopSchema = new mongoose.Schema({
   stockTier:        { type: String, required: true, enum: ['micro','standard','mega','enterprise'], default: 'standard' },
   isActive:         { type: Boolean, default: true },
   ownerUsername:    { type: String },
-  // CHOREO-4: Per-shop Gemini API Key
   geminiApiKey:     { type: String, default: '' },
   settings: {
     cosmeticSavingsPercent: { type: Number,  default: 0 },
@@ -188,8 +182,6 @@ app.use('/api/', apiLimiter);
 
 /* ════════════════════════════════════════════════════════════
    HEALTH / KEEP-ALIVE
-   CHOREO-3: Choreo healthcheck probe '/health' use කරයි
-   Choreo Console → Component → Health Check → Path: /health
 ════════════════════════════════════════════════════════════ */
 app.get('/ping', (req, res) => res.status(200).json({
   status: 'ok',
@@ -198,15 +190,6 @@ app.get('/ping', (req, res) => res.status(200).json({
   uptime: process.uptime(),
 }));
 
-// TEMP DEBUG — env var verification (REMOVE after confirming, do not leave in production)
-app.get('/__debug-env', (req, res) => {
-  const mask = (v) => v ? `${v.slice(0,1)}***${v.slice(-1)} (len:${v.length})` : 'NOT SET (using fallback)';
-  res.json({
-    ACTION_PIN_FULL: JSON.stringify(process.env.ACTION_PIN ?? null), // TEMP: full value, remove after debugging
-    MASTER_ACTION_PASSWORD: mask(process.env.MASTER_ACTION_PASSWORD),
-    JWT_SECRET: mask(process.env.JWT_SECRET),
-  });
-});
 app.get('/health', (req, res) => res.status(200).json({
   status: 'ok',
   db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
@@ -263,22 +246,20 @@ authRouter.post('/logout', requireAuth, async (req, res) => {
   return res.json({ success: true });
 });
 
+// 🔒 SECURED: PIN verification properly restored
 authRouter.post('/verify-pin', requireAuth, async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{4}$/.test(pin)) return res.status(400).json({ message: 'PIN ඉලක්කම් 4ක් ඇතුළත් කරන්න' });
 
-  // ⚠️ TEMP BYPASS — PIN check disabled 2026-06-20. RE-ENABLE before going live.
-  // To re-enable: uncomment the block below and delete this bypass.
-  /*
   const storedPin = (process.env.ACTION_PIN || ACTION_PIN).trim();
   const submittedPin = pin.trim();
+  
   if (submittedPin !== storedPin) {
     return res.status(400).json({ message: 'PIN වැරදියි' });
   }
-  */
 
   const pinToken = signToken({ ...req.user, pinVerified: true }, '2h');
-  await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified (BYPASS MODE)' });
+  await audit('PIN_VERIFY', 'medium', req, { details: 'Layer 2 PIN verified' });
   return res.json({ success: true, pinToken });
 });
 
@@ -290,7 +271,6 @@ authRouter.post('/verify-master-password', requireAuth, (req, res) => {
   return res.json({ success: true });
 });
 
-// FIX: change-password route — api.js authAPI.changePassword() calls this
 authRouter.put('/change-password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) return res.status(400).json({ message: 'currentPassword සහ newPassword අවශ්‍යයි' });
@@ -565,11 +545,10 @@ staffRouter.put('/:id/reset-password', async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 });
 
-// PUT /api/admin/staff/:id — update staff (api.js: adminAPI.updateStaff)
 staffRouter.put('/:id', async (req, res) => {
   const allowed = ['displayName', 'role', 'isActive'];
   const update  = {};
-  allowed.forEach(k => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
+  allowed.forEach(k => { if (req.body[k] !== undefined) update[`settings.${k}`] = req.body[k]; });
   if (update.role && !['manager', 'cashier'].includes(update.role))
     return res.status(400).json({ message: 'Role: manager/cashier පමණි' });
   try {
@@ -616,7 +595,7 @@ adminAuditRouter.get('/', async (req, res) => {
 app.use('/api/admin/audit', adminAuditRouter);
 
 /* ════════════════════════════════════════════════════════════
-   OCR ROUTE — CHOREO-5: Per-shop Gemini key → global key fallback
+   OCR ROUTE — Per-shop Gemini key → global key fallback
 ════════════════════════════════════════════════════════════ */
 const ocrRouter = express.Router();
 ocrRouter.use(requireAuth);
@@ -713,7 +692,7 @@ adminDashRouter.get('/', async (req, res) => {
 app.use('/api/admin/dashboard', adminDashRouter);
 
 /* ════════════════════════════════════════════════════════════
-   ADMIN SETTINGS — CHOREO-7: geminiApiKey save/load
+   ADMIN SETTINGS — geminiApiKey save/load
 ════════════════════════════════════════════════════════════ */
 const adminSettingsRouter = express.Router();
 adminSettingsRouter.use(requireAuth, requireAdmin);
@@ -749,7 +728,7 @@ adminSettingsRouter.put('/', async (req, res) => {
 app.use('/api/admin/settings', adminSettingsRouter);
 
 /* ════════════════════════════════════════════════════════════
-   FINANCIAL MATRIX (api.js FIX-1 route)
+   FINANCIAL MATRIX
 ════════════════════════════════════════════════════════════ */
 app.get('/api/admin/finance/matrix', requireAuth, requireAdmin, async (req, res) => {
   try {
