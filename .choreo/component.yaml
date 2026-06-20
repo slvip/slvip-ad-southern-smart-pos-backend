@@ -35,10 +35,10 @@ endpoints:
     service:
       basePath: /
       port: 8080
+      schemaFilePath: openapi.yaml
     type: REST
     networkVisibilities:
       - Public
-    schemaFilePath: openapi.yaml
     # FIX: explicit schema added so the gateway's route table matches every
     # Express route (including verify-pin, added after the component's first
     # deploy). Without this, routes added later were never wired into the
